@@ -117,9 +117,9 @@ impl PromptSection for IdentitySection {
         }
         for file in [
             "AGENTS.md",
-            "SOUL.md",
+            "SOUL.md", // roles/researcher/SOUL.md
             "TOOLS.md",
-            "IDENTITY.md",
+            "IDENTITY.md", // roles/researcher/IDENTITY.md
             "USER.md",
             "HEARTBEAT.md",
             "BOOTSTRAP.md",
