@@ -65,6 +65,7 @@ pub struct Agent {
     security_summary: Option<String>,
     /// Autonomy level from config; controls safety prompt instructions.
     autonomy_level: crate::security::AutonomyLevel,
+    role: Option<String>,
 }
 
 pub struct AgentBuilder {
@@ -92,6 +93,7 @@ pub struct AgentBuilder {
     tool_descriptions: Option<ToolDescriptions>,
     security_summary: Option<String>,
     autonomy_level: Option<crate::security::AutonomyLevel>,
+    pub role: Option<String>,
 }
 
 impl AgentBuilder {
@@ -574,6 +576,7 @@ impl Agent {
             tool_descriptions: self.tool_descriptions.as_ref(),
             security_summary: self.security_summary.clone(),
             autonomy_level: self.autonomy_level,
+            role: self.role.as_deref(),
         };
         self.prompt_builder.build(&ctx)
     }

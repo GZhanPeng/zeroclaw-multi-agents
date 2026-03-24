@@ -31,6 +31,8 @@ pub struct PromptContext<'a> {
     /// includes "ask before acting" instructions. Full autonomy omits them
     /// so the model executes tools directly without simulating approval.
     pub autonomy_level: AutonomyLevel,
+
+    pub role: Option<String>,
 }
 
 pub trait PromptSection: Send + Sync {
@@ -117,16 +119,29 @@ impl PromptSection for IdentitySection {
         }
         for file in [
             "AGENTS.md",
-            "SOUL.md", // roles/researcher/SOUL.md
+            "SOUL.md",
             "TOOLS.md",
-            "IDENTITY.md", // roles/researcher/IDENTITY.md
+            "IDENTITY.md",
             "USER.md",
             "HEARTBEAT.md",
             "BOOTSTRAP.md",
             "MEMORY.md",
         ] {
-            inject_workspace_file(&mut prompt, ctx.workspace_dir, file);
-        }
+        let path = if let Some(role) = &ctx.role {
+            let role_path = format!("roles/{}/{}", role, file);
+            let full = ctx.workspace_dir.join(&role_path);
+
+            if full.exists() {
+                role_path
+            } else {
+                file.to_string() // fallback
+            }
+        } else {
+            file.to_string()
+        };
+
+        inject_workspace_file(&mut prompt, ctx.workspace_dir, &path);
+    }
 
         Ok(prompt)
     }
