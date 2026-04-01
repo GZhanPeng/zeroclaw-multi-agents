@@ -4188,7 +4188,9 @@ fn setup_channels() -> Result<ChannelsConfig> {
                 };
 
                 let room_id: String = Input::new()
-                    .with_prompt("  Room ID (e.g. !abc123:matrix.org)")
+                    .with_prompt(
+                        "  Room ID(s) (single or comma-separated, e.g. !abc123:matrix.org,!ops:matrix.org)",
+                    )
                     .interact_text()?;
 
                 let users_str: String = Input::new()

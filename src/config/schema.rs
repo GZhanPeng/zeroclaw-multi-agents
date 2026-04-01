@@ -6352,7 +6352,9 @@ pub struct MatrixConfig {
     /// Optional Matrix device ID.
     #[serde(default)]
     pub device_id: Option<String>,
-    /// Matrix room ID to listen in (e.g. `"!abc123:matrix.org"`).
+    /// Matrix room ID(s) to listen in.
+    /// Supports a single room/alias (e.g. `"!abc123:matrix.org"` or `"#ops:matrix.org"`)
+    /// or a comma-separated list (e.g. `"!ops:matrix.org,!alerts:matrix.org"`).
     pub room_id: String,
     /// Allowed Matrix user IDs. Empty = deny all.
     pub allowed_users: Vec<String>,

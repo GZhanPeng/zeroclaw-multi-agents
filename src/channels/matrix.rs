@@ -32,12 +32,13 @@ pub struct MatrixChannel {
     homeserver: String,
     access_token: String,
     room_id: String,
+    room_ids: Vec<String>,
     allowed_users: Vec<String>,
     allowed_rooms: Vec<String>,
     session_owner_hint: Option<String>,
     session_device_id_hint: Option<String>,
     zeroclaw_dir: Option<PathBuf>,
-    resolved_room_id_cache: Arc<RwLock<Option<String>>>,
+    resolved_room_id_cache: Arc<RwLock<Option<Vec<String>>>>,
     sdk_client: Arc<OnceCell<MatrixSdkClient>>,
     http_client: Client,
     reaction_events: Arc<RwLock<HashMap<String, String>>>,
@@ -51,6 +52,7 @@ impl std::fmt::Debug for MatrixChannel {
         f.debug_struct("MatrixChannel")
             .field("homeserver", &self.homeserver)
             .field("room_id", &self.room_id)
+            .field("room_ids", &self.room_ids)
             .field("allowed_users", &self.allowed_users)
             .field("allowed_rooms", &self.allowed_rooms)
             .finish_non_exhaustive()
@@ -191,7 +193,12 @@ impl MatrixChannel {
     ) -> Self {
         let homeserver = homeserver.trim_end_matches('/').to_string();
         let access_token = access_token.trim().to_string();
-        let room_id = room_id.trim().to_string();
+        let room_ids: Vec<String> = room_id
+            .split(',')
+            .map(|room| room.trim().to_string())
+            .filter(|room| !room.is_empty())
+            .collect();
+        let room_id = room_ids.first().cloned().unwrap_or_default();
         let allowed_users = allowed_users
             .into_iter()
             .map(|user| user.trim().to_string())
@@ -207,6 +214,7 @@ impl MatrixChannel {
             homeserver,
             access_token,
             room_id,
+            room_ids,
             allowed_users,
             allowed_rooms,
             session_owner_hint: Self::normalize_optional_field(owner_hint),
@@ -335,18 +343,32 @@ impl MatrixChannel {
         false
     }
 
-    async fn target_room_id(&self) -> anyhow::Result<String> {
-        if self.room_id.starts_with('!') {
-            return Ok(self.room_id.clone());
-        }
-
+    async fn target_room_ids(&self) -> anyhow::Result<Vec<String>> {
         if let Some(cached) = self.resolved_room_id_cache.read().await.clone() {
             return Ok(cached);
         }
 
-        let resolved = self.resolve_room_id().await?;
+        let mut resolved = Vec::with_capacity(self.room_ids.len());
+        for configured in &self.room_ids {
+            resolved.push(self.resolve_room_id(configured).await?);
+        }
+
+        if resolved.is_empty() {
+            anyhow::bail!("at least one Matrix room ID or alias must be configured");
+        }
+
         *self.resolved_room_id_cache.write().await = Some(resolved.clone());
         Ok(resolved)
+    }
+
+    async fn target_room_id(&self) -> anyhow::Result<String> {
+        self.target_room_ids()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                anyhow::anyhow!("at least one Matrix room ID or alias must be configured")
+            })
     }
 
     async fn get_my_identity(&self) -> anyhow::Result<WhoAmIResponse> {
@@ -472,8 +494,8 @@ impl MatrixChannel {
         Ok(client.clone())
     }
 
-    async fn resolve_room_id(&self) -> anyhow::Result<String> {
-        let configured = self.room_id.trim();
+    async fn resolve_room_id(&self, configured: &str) -> anyhow::Result<String> {
+        let configured = configured.trim();
 
         if configured.starts_with('!') {
             return Ok(configured.to_string());
@@ -743,10 +765,10 @@ impl Channel for MatrixChannel {
     }
 
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
-        let target_room_id = self.target_room_id().await?;
-        self.ensure_room_supported(&target_room_id).await?;
-
-        let target_room: OwnedRoomId = target_room_id.parse()?;
+        let target_room_ids = self.target_room_ids().await?;
+        for room_id in &target_room_ids {
+            self.ensure_room_supported(room_id).await?;
+        }
         let my_user_id: OwnedUserId = match self.get_my_user_id().await {
             Ok(user_id) => user_id.parse()?,
             Err(error) => {
@@ -767,9 +789,9 @@ impl Channel for MatrixChannel {
         let _ = client.sync_once(SyncSettings::new()).await;
 
         tracing::info!(
-            "Matrix channel listening on room {} (configured as {})...",
-            target_room_id,
-            self.room_id
+            "Matrix channel listening on rooms {:?} (configured as {:?})...",
+            target_room_ids,
+            self.room_ids
         );
 
         let recent_event_cache = Arc::new(Mutex::new((
@@ -778,7 +800,7 @@ impl Channel for MatrixChannel {
         )));
 
         let tx_handler = tx.clone();
-        let target_room_for_handler = target_room.clone();
+        let target_rooms_for_handler = target_room_ids.clone();
         let my_user_id_for_handler = my_user_id.clone();
         let allowed_users_for_handler = self.allowed_users.clone();
         let allowed_rooms_for_handler = self.allowed_rooms.clone();
@@ -790,7 +812,7 @@ impl Channel for MatrixChannel {
 
         client.add_event_handler(move |event: OriginalSyncRoomMessageEvent, room: Room| {
             let tx = tx_handler.clone();
-            let target_room = target_room_for_handler.clone();
+            let target_rooms = target_rooms_for_handler.clone();
             let my_user_id = my_user_id_for_handler.clone();
             let allowed_users = allowed_users_for_handler.clone();
             let allowed_rooms = allowed_rooms_for_handler.clone();
@@ -801,10 +823,9 @@ impl Channel for MatrixChannel {
             let transcription_mgr = transcription_mgr_for_handler.clone();
 
             async move {
-                if !MatrixChannel::room_matches_target(
-                    target_room.as_str(),
-                    room.room_id().as_str(),
-                ) {
+                if !target_rooms.iter().any(|target_room| {
+                    MatrixChannel::room_matches_target(target_room, room.room_id().as_str())
+                }) {
                     return;
                 }
 
@@ -1506,6 +1527,22 @@ mod tests {
     }
 
     #[test]
+    fn supports_multiple_comma_separated_room_ids() {
+        let ch = MatrixChannel::new(
+            "https://matrix.org".to_string(),
+            "tok".to_string(),
+            " !room1:matrix.org, #ops:matrix.org , !room2:matrix.org ".to_string(),
+            vec![],
+        );
+
+        assert_eq!(ch.room_id, "!room1:matrix.org");
+        assert_eq!(
+            ch.room_ids,
+            vec!["!room1:matrix.org", "#ops:matrix.org", "!room2:matrix.org"]
+        );
+    }
+
+    #[test]
     fn wildcard_allows_anyone() {
         let ch = MatrixChannel::new(
             "https://m.org".to_string(),
@@ -1674,7 +1711,7 @@ mod tests {
             vec![],
         );
 
-        let err = ch.resolve_room_id().await.unwrap_err();
+        let err = ch.resolve_room_id(&ch.room_id).await.unwrap_err();
         assert!(err
             .to_string()
             .contains("must start with '!' (room ID) or '#' (room alias)"));
@@ -1702,7 +1739,7 @@ mod tests {
             vec![],
         );
 
-        *ch.resolved_room_id_cache.write().await = Some("!cached:matrix.org".to_string());
+        *ch.resolved_room_id_cache.write().await = Some(vec!["!cached:matrix.org".to_string()]);
         let room_id = ch.target_room_id().await.unwrap();
         assert_eq!(room_id, "!cached:matrix.org");
     }
