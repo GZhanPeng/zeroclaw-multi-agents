@@ -230,3 +230,57 @@ cargo zigbuild --release \
   --target aarch64-unknown-linux-gnu \
   --features hardware,peripheral-rpi
 ```
+
+---
+
+## ZeroClaw Gateway Bridge (OTP + Config API)
+
+If you need an external control-plane API for pairing + config updates, run:
+
+```bash
+python3 scripts/zeroclaw_gateway_bridge.py --host 0.0.0.0 --port 18080
+```
+
+This bridge is designed to run on the same machine as `zeroclaw gateway` and exposes:
+
+- `GET /health`
+- `GET /otp` — fetch current pairing code (internally calls localhost-only `/admin/paircode`)
+- `POST /otp/new` — rotate pairing code (internally calls localhost-only `/admin/paircode/new`)
+- `POST /pair` — exchange pairing code for bearer token (`/pair`)
+- `GET /config` — read current masked config (`/api/config`), requires `Authorization: Bearer <token>`
+- `PUT /config` — update config TOML (`/api/config`), requires `Authorization: Bearer <token>`
+
+Optional bridge auth:
+
+```bash
+export BRIDGE_TOKEN='replace-with-random-secret'
+python3 scripts/zeroclaw_gateway_bridge.py
+```
+
+When `BRIDGE_TOKEN` is set, every bridge request must include:
+
+```http
+X-Bridge-Token: replace-with-random-secret
+```
+
+### Example flow
+
+```bash
+# 1) fetch pairing code
+curl -s http://127.0.0.1:18080/otp | jq .
+
+# 2) pair and obtain bearer token
+curl -s -X POST http://127.0.0.1:18080/pair \
+  -H 'Content-Type: application/json' \
+  -d '{"pairing_code":"123456"}' | jq .
+
+# 3) read config
+curl -s http://127.0.0.1:18080/config \
+  -H 'Authorization: Bearer zc_xxx' | jq .
+
+# 4) update config from local file
+curl -s -X PUT http://127.0.0.1:18080/config \
+  -H 'Authorization: Bearer zc_xxx' \
+  -H 'Content-Type: text/plain' \
+  --data-binary @~/.zeroclaw/config.toml | jq .
+```
